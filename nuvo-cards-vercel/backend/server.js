@@ -623,5 +623,6 @@ async function start(port = PORT) {
   return server;
 }
 
-module.exports = { start, handler };
-if (require.main === module) start().catch((e) => { console.error(e); process.exit(1); });
+   module.exports = handler;
+   module.exports.start = start;
+   module.exports.handler = handler;
