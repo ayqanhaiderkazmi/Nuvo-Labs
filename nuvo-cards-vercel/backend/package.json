@@ -1,0 +1,13 @@
+{
+  "name": "nuvo-cards-backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Nuvo Labs work-card tracker API",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test.js"
+  },
+  "engines": { "node": "22.x" },
+  "dependencies": { "pg": "^8.13.0" }
+}
