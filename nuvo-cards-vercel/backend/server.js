@@ -2,6 +2,7 @@
 const http = require('http');
 const crypto = require('crypto');
 const db = require('./db');
+const { SEED_TREE } = require('./objectives_seed');
 
 // ---------------------------------------------------------------- config
 const PORT = process.env.PORT || 3000;
@@ -501,6 +502,39 @@ route('PUT', '/api/payouts/:month/:userId', { admin: true }, async ({ params, bo
   return report(params.month);
 });
 
+// ---------------------------------------------------------------- objectives tree
+function cleanTree(root) {
+  let count = 0;
+  const seen = new Set();
+  const walk = (node, depth) => {
+    if (!node || typeof node !== 'object' || Array.isArray(node)) throw bad('Bad box in the tree');
+    if (depth > 8) throw bad('Too many levels (max 9)');
+    if (++count > 400) throw bad('Too many boxes (max 400)');
+    const title = String(node.title || '').trim().slice(0, 100);
+    const text = String(node.text || '').trim().slice(0, 2000);
+    if (!title && !text) throw bad('Every box needs a title or some text');
+    let id = typeof node.id === 'string' && /^[\w-]{1,60}$/.test(node.id) ? node.id : uid();
+    if (seen.has(id)) id = uid();
+    seen.add(id);
+    const kids = Array.isArray(node.children) ? node.children : [];
+    return { id, title, text, children: kids.map((k) => walk(k, depth + 1)) };
+  };
+  return walk(root, 0);
+}
+async function loadObjectives() {
+  const r = await db.get('SELECT * FROM objectives WHERE id = ?', ['main']);
+  if (!r) return { tree: SEED_TREE, updated_at: null };
+  return { tree: JSON.parse(r.data), updated_at: r.updated_at };
+}
+route('GET', '/api/objectives', async () => loadObjectives());
+route('PUT', '/api/objectives', { admin: true }, async ({ body, user }) => {
+  const tree = cleanTree(body.tree);
+  await db.run(
+    'INSERT INTO objectives (id, data, updated_at, updated_by) VALUES (?,?,?,?) ON CONFLICT (id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at, updated_by = excluded.updated_by',
+    ['main', JSON.stringify(tree), nowIso(), user.id]);
+  return loadObjectives();
+});
+
 // ---------------------------------------------------------------- server
 function corsHeaders(req) {
   const origin = req.headers.origin;
@@ -532,7 +566,7 @@ function readBody(req) {
     const chunks = [];
     req.on('data', (c) => {
       size += c.length;
-      if (size > 100000) { reject(new HttpError(413, 'Request too large')); req.destroy(); return; }
+      if (size > 300000) { reject(new HttpError(413, 'Request too large')); req.destroy(); return; }
       chunks.push(c);
     });
     req.on('end', () => {
@@ -604,7 +638,7 @@ async function seedUsers() {
 // Vercel runs this file as a serverless function: no listen(), just set up the database once per instance.
 let ready = null;
 function ensureReady() {
-  if (!ready) ready = db.init().then(seedUsers).catch((e) => { ready = null; throw e; });
+  if (!ready) ready = db.init().then(seedUsers).then(seedObjectives).catch((e) => { ready = null; throw e; });
   return ready;
 }
 async function handler(req, res) {
@@ -615,6 +649,11 @@ async function handler(req, res) {
   return handle(req, res);
 }
 
+async function seedObjectives() {
+  await db.run('INSERT INTO objectives (id, data, updated_at, updated_by) VALUES (?,?,?,?) ON CONFLICT (id) DO NOTHING',
+    ['main', JSON.stringify(SEED_TREE), nowIso(), null]);
+}
+
 async function start(port = PORT) {
   await ensureReady();
   const server = http.createServer(handle);
@@ -623,6 +662,7 @@ async function start(port = PORT) {
   return server;
 }
 
-   module.exports = handler;
-   module.exports.start = start;
-   module.exports.handler = handler;
+module.exports = handler;
+module.exports.start = start;
+module.exports.handler = handler;
+if (require.main === module) start().catch((e) => { console.error(e); process.exit(1); });

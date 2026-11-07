@@ -22,6 +22,7 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS payouts (
     month TEXT NOT NULL, user_id TEXT NOT NULL, sourcing_cents INTEGER NOT NULL DEFAULT 0,
     paid INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (month, user_id))`,
+  `CREATE TABLE IF NOT EXISTS objectives (id TEXT PRIMARY KEY, data TEXT NOT NULL, updated_at TEXT NOT NULL, updated_by TEXT)`,
   `CREATE INDEX IF NOT EXISTS idx_cards_owner ON cards(owner_id)`,
   `CREATE INDEX IF NOT EXISTS idx_logs_card ON time_logs(card_id)`,
   `CREATE INDEX IF NOT EXISTS idx_events_card ON card_events(card_id)`,

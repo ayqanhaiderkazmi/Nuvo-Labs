@@ -91,6 +91,18 @@ const { start } = require('./server');
   assert.equal((await call('GET', '/api/cards', S.token)).data.cards.length, 2);
   assert.equal((await call('GET', '/api/nothing', A.token)).status, 404);
 
+  // objectives tree: everyone reads, only admin edits
+  const ob = (await call('GET', '/api/objectives', S.token)).data;
+  assert.equal(ob.tree.title, 'Main objective'); assert.ok(ob.tree.children.length >= 4);
+  assert.equal((await call('PUT', '/api/objectives', S.token, { tree: ob.tree })).status, 403);
+  assert.equal((await call('PUT', '/api/objectives', A.token, { tree: { title: '', text: '' } })).status, 400);
+  const edited = JSON.parse(JSON.stringify(ob.tree));
+  edited.children[0].children.push({ title: 'New branch', text: 'Test', children: [] });
+  const saved = (await call('PUT', '/api/objectives', A.token, { tree: edited })).data;
+  assert.equal(saved.tree.children[0].children.at(-1).title, 'New branch');
+  assert.ok(saved.tree.children[0].children.at(-1).id);
+  assert.equal((await call('GET', '/api/objectives', Y.token)).data.tree.children[0].children.at(-1).title, 'New branch');
+
   console.log('ALL TESTS PASSED');
   server.close(); process.exit(0);
 })().catch((e) => { console.error('TEST FAILED', e); process.exit(1); });
