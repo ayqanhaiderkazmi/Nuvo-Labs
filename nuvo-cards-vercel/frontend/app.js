@@ -2,7 +2,8 @@
 // Nuvo Labs cards tracker. Plain JavaScript, no build step. All text is inserted with textContent (no HTML injection).
 const API = (window.NUVO_API_URL || '').replace(/\/+$/, '');
 const S = { token: localStorage.getItem('nuvo_token'), user: null, users: [], meta: null, view: 'board', month: null,
-  filters: { owner: '', role: '', type: '' }, timer: null, cards: [], report: null };
+  filters: { owner: '', role: '', type: '' }, timer: null, cards: [], report: null,
+  obj: null, objEdit: false, objZoom: '1', collapsed: new Set() };
 
 // ---------------------------------------------------------------- tiny DOM helper
 function h(tag, attrs, ...kids) {
@@ -74,6 +75,7 @@ async function refresh() {
   const tasks = [api('/api/timer').then((r) => { S.timer = r.timer; })];
   if (S.view === 'board') tasks.push(api('/api/cards?month=' + S.month).then((r) => { S.cards = r.cards; }));
   if (S.view === 'dashboard' || S.view === 'bonus') tasks.push(api('/api/report?month=' + S.month).then((r) => { S.report = r; }));
+  if (S.view === 'objectives') tasks.push(api('/api/objectives').then((r) => { S.obj = r; }));
   if (S.view === 'team') tasks.push(api('/api/users').then((r) => { S.users = r.users; }));
   await Promise.all(tasks);
 }
@@ -87,6 +89,7 @@ function render() {
   const main = h('main');
   $app.appendChild(main);
   if (S.view === 'board') main.appendChild(boardView());
+  if (S.view === 'objectives' && S.obj) main.appendChild(objectivesView());
   if (S.view === 'dashboard') main.appendChild(dashboardView());
   if (S.view === 'bonus') main.appendChild(bonusView());
   if (S.view === 'team') main.appendChild(teamView());
@@ -112,7 +115,7 @@ function loginView() {
 }
 
 function topBar() {
-  const tabs = [['board', 'Board'], ['dashboard', 'Dashboard'], ['bonus', 'Bonus tracker'], ['team', 'Team']];
+  const tabs = [['board', 'Board'], ['objectives', 'Objectives'], ['dashboard', 'Dashboard'], ['bonus', 'Bonus tracker'], ['team', 'Team']];
   const timer = S.timer ? h('div', { class: 'timer' }, h('span', {}, S.timer.card_title), h('b', { id: 'tick' }, '0:00'),
     h('button', { class: 'btn sm', onclick: () => act(async () => { await api('/api/timer/stop', { method: 'POST' }); await refresh(); render(); }, 'Timer stopped') }, 'Stop')) : null;
   return h('div', { class: 'top' },
@@ -268,6 +271,92 @@ async function openCard(id) {
       detail.events.map((e) => h('div', { class: 'ev' }, fmtDate(e.at) + ' · ', h('b', {}, e.user_name || 'System'), ' ' + e.type.replace(/_/g, ' ') + (e.detail ? ': ' + e.detail : ''))));
   }
   document.body.appendChild(shade);
+}
+
+// ---------------------------------------------------------------- objectives tree
+const OBJ_COLS = ['Main objective', 'Division', 'Department', 'Individual objective', 'Targets'];
+const OBJ_W = [200, 250, 250, 380, 520];
+const objW = (d) => OBJ_W[Math.min(d, OBJ_W.length - 1)];
+const newId = () => (window.crypto && crypto.randomUUID ? crypto.randomUUID() : 'n' + Date.now() + Math.random().toString(16).slice(2));
+function findObj(node, id, parent = null, index = 0) {
+  if (node.id === id) return { node, parent, index };
+  for (let i = 0; i < node.children.length; i++) { const r = findObj(node.children[i], id, node, i); if (r) return r; }
+  return null;
+}
+function countObj(node) { return 1 + node.children.reduce((s, c) => s + countObj(c), 0); }
+async function saveTree(msg) {
+  try { S.obj = await api('/api/objectives', { method: 'PUT', body: { tree: S.obj.tree } }); toast(msg || 'Saved'); }
+  catch (e) { toast(e.message, true); try { S.obj = await api('/api/objectives'); } catch { /* keep what we have */ } }
+  render();
+}
+function objectivesView() {
+  const isAdmin = S.user.is_admin;
+  const tbtn = (label, fn, cls) => h('button', { class: 'btn sm ' + (cls || 'ghost'), onclick: (e) => { e.stopPropagation(); fn(); } }, label);
+  const nodeEl = (n, depth, parent, idx) => {
+    const open = !S.collapsed.has(n.id);
+    const tools = isAdmin && S.objEdit ? h('div', { class: 'otools' },
+      tbtn('Edit', () => openObjective(n.id)),
+      tbtn('+ Branch', () => openObjective(null, n.id)),
+      parent && idx > 0 ? tbtn('↑', () => moveObj(n.id, -1)) : null,
+      parent && idx < parent.children.length - 1 ? tbtn('↓', () => moveObj(n.id, 1)) : null,
+      parent ? tbtn('Delete', () => deleteObj(n.id), 'danger') : null) : null;
+    const fold = n.children.length ? h('button', { class: 'fold', title: open ? 'Hide branches' : 'Show branches',
+      onclick: () => { if (open) S.collapsed.add(n.id); else S.collapsed.delete(n.id); render(); } }, open ? '–' : '+' + n.children.length) : null;
+    return h('div', { class: 'otn' },
+      h('div', { class: 'otb' + (depth === 0 ? ' l0' : ''), style: `width:${objW(depth)}px` },
+        n.title ? h('div', { class: 'ott' }, n.title) : null, n.text ? h('div', { class: 'ottx' }, n.text) : null, fold, tools),
+      n.children.length && open ? h('div', { class: 'okids' }, n.children.map((c, i) => nodeEl(c, depth + 1, n, i))) : null);
+  };
+  const colh = h('div', { class: 'ocolh' }, OBJ_COLS.map((c, i) => h('span', { style: i < OBJ_COLS.length - 1 ? `width:${objW(i) + 44}px` : '' }, c)));
+  const zoom = h('select', { onchange: (e) => { S.objZoom = e.target.value; render(); } },
+    [['1', '100%'], ['0.8', '80%'], ['0.6', '60%']].map(([v, t]) => h('option', { value: v, selected: S.objZoom === v }, t)));
+  return h('div', {},
+    h('h1', {}, 'Objectives'),
+    h('p', { class: 'sub' }, 'Read left to right. Each level is what the level on its right adds up to.'),
+    h('div', { class: 'bar' }, h('span', { class: 'note' }, 'Zoom'), zoom,
+      h('button', { class: 'btn ghost sm', onclick: () => { S.collapsed = new Set(); render(); } }, 'Open all'),
+      h('button', { class: 'btn ghost sm', onclick: () => { const walk = (x) => { if (x.children.length) { S.collapsed.add(x.id); x.children.forEach(walk); } }; S.obj.tree.children.forEach(walk); render(); } }, 'Fold to divisions'),
+      h('span', { class: 'grow' }),
+      isAdmin ? h('button', { class: 'btn' + (S.objEdit ? '' : ' ghost'), onclick: () => { S.objEdit = !S.objEdit; render(); } }, S.objEdit ? 'Done editing' : 'Edit tree') : h('span', { class: 'note' }, 'View only. Ayqan edits this page.')),
+    h('div', { class: 'wrap' }, h('div', { class: 'otree', style: `zoom:${S.objZoom}` }, colh, nodeEl(S.obj.tree, 0, null, 0))));
+}
+function openObjective(id, parentId) {
+  const found = id ? findObj(S.obj.tree, id) : null;
+  const node = found ? found.node : null;
+  const close = () => shade.remove();
+  const title = h('input', { value: node ? node.title : '', placeholder: 'e.g. Department: Outreach, or a person’s name' });
+  const text = h('textarea', { style: 'min-height:170px' }, node ? node.text : '');
+  const shade = h('div', { class: 'shade', onclick: (e) => { if (e.target === shade) close(); } });
+  const save = async () => {
+    if (!title.value.trim() && !text.value.trim()) return toast('Add a title or some text', true);
+    if (node) { node.title = title.value.trim(); node.text = text.value.trim(); }
+    else { const p = findObj(S.obj.tree, parentId).node; p.children.push({ id: newId(), title: title.value.trim(), text: text.value.trim(), children: [] }); S.collapsed.delete(p.id); }
+    close(); await saveTree(node ? 'Saved' : 'Branch added');
+  };
+  const parentName = parentId ? (findObj(S.obj.tree, parentId).node.title || 'this box') : '';
+  shade.appendChild(h('div', { class: 'drawer' },
+    h('div', { class: 'bar' }, h('span', { class: 'pill' }, node ? 'Edit box' : 'New branch'), h('span', { class: 'grow' }), h('button', { class: 'btn ghost sm', onclick: close }, 'Close')),
+    h('h1', {}, node ? (node.title || 'Edit box') : 'Add a branch'),
+    parentId ? h('p', { class: 'sub' }, 'It will be added under: ' + parentName) : null,
+    h('label', {}, 'Title (small heading)'), title,
+    h('label', {}, 'Text (new lines are kept)'), text,
+    h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: save }, node ? 'Save' : 'Add branch'))));
+  document.body.appendChild(shade);
+  title.focus();
+}
+async function moveObj(id, dir) {
+  const f = findObj(S.obj.tree, id); if (!f || !f.parent) return;
+  const list = f.parent.children; const j = f.index + dir;
+  if (j < 0 || j >= list.length) return;
+  [list[f.index], list[j]] = [list[j], list[f.index]];
+  await saveTree('Moved');
+}
+async function deleteObj(id) {
+  const f = findObj(S.obj.tree, id); if (!f || !f.parent) return;
+  const c = countObj(f.node);
+  if (!confirm(c > 1 ? `Delete this box and the ${c - 1} box(es) under it?` : 'Delete this box?')) return;
+  f.parent.children.splice(f.index, 1);
+  await saveTree('Deleted');
 }
 
 // ---------------------------------------------------------------- dashboard
